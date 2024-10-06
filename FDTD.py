@@ -10,8 +10,8 @@ row0 = 1.205e0  # 空気の密度 [kg/m^3]
 
 # 解析基本設定 ----------------------------
 # 変更する場合は、import直後にbasicConfigを介して実施すること
-fmax = 48 * 1e3  # 最大解析周波数[Hz]
-clf = 1 / np.sqrt(3)  # クーラン数(1より小さくするのが原則)
+fmax = 10 * 1e3  # 最大解析周波数[Hz]
+clf = 1 / np.sqrt(3)  # クーラン数
 # --------------------------------------
 
 
@@ -39,14 +39,18 @@ def basicConfig(
         global clf
         clf = newClf
 
-    global dt
-    dt = 1 / 2.0 / fmax  # 時間離散化幅[s]
-
+    # 最大解析周波数に対応する波長の1/10とする
     global dh
-    dh = c0 * dt / clf  # 時間離散化幅[s]
+    dh = c0 / fmax / 10  # 空間離散化幅[m]
+    # dh = c0 * dt / clf  # 時間離散化幅[s]
+
+    # dhとクーラン数から計算する
+    global dt
+    dt = dh / c0 * clf  # 時間離散化幅[s]
+    # dt = 1 / 2.0 / fmax  # 時間離散化幅[s]
 
     global kp0
-    kp0 = row0 * c0 * c0  # 体積弾性率
+    kp0 = row0 * c0 * c0  # 体積弾性率[kgm / s^2]
 
     global z0
     z0 = row0 * c0  # 特性インピーダンス
@@ -185,6 +189,8 @@ class GaussianPulse(SoundSource):
         self._m = m
         self._t0 = t0
         self._a = a
+        self.q = None  # 体積速度[m^3/s]
+        self.p = None  # 音圧波形(スケールは正確ではない)
         self._create_waveform()
 
     @property
@@ -203,12 +209,13 @@ class GaussianPulse(SoundSource):
 
     def _create_waveform(self):
         """
-        音源波形の生成
+        音源波形(体積速度)の生成
         """
         self.q = np.zeros(self.tdr + 1)
         for t in range(self.tdr):
             t += 1
             self.q[t] = self._m * np.exp(-self._a * pow(float(t * dt - self._t0), 2.0))
+        self.p = self.q[1:] - self.q[0:-1]
 
 
 class SoundField:
@@ -301,70 +308,36 @@ class SoundField:
         ii = self.ii
         jj = self.jj
 
-        callback[1][0] += time.time() - t0
-
         # ------------------------------------------
         # 粒子速度の更新
         # ------------------------------------------
         # vx ----------------------------------------
         # 左側のPML
-        # for i in range(pl + 1):
-        #     vx[i, 1 : jx + 1] = pmla[i] * vx[i, 1 : jx + 1] - pmlb[i] * (
-        #         p[i + 1, 1 : jx + 1] - p[i, 1 : jx + 1]
-        #     )
         vx[0 : pl + 1, jj] = self.pml.a[0 : pl + 1, jj] * vx[
             0 : pl + 1, jj
         ] - self.pml.b[0 : pl + 1, jj] * (p[1 : pl + 2, jj] - p[0 : pl + 1, jj])
-        callback[1][1] += time.time() - t0
 
         # 音響領域
-        # for i in range(pl + 1, ix - pl - 1 + 1):
-        #     vx[i, : jx + 1] = vx[i, : jx + 1] - vc * (
-        #         p[i + 1, : jx + 1] - p[i, : jx + 1]
-        #     )
-        # vx[pl + 1 : ix - pl, : jx + 1] = vx[pl + 1 : ix - pl, : jx + 1] - vc * (
-        #     p[pl + 1 + 1 : ix - pl + 1, : jx + 1] - p[pl + 1 : ix - pl, : jx + 1]
-        # )
         vx[pl + 1 : ix - pl, :] = vx[pl + 1 : ix - pl, :] - vc * (
             p[pl + 1 + 1 : ix - pl + 1, :] - p[pl + 1 : ix - pl, :]
         )
-        callback[1][2] += time.time() - t0
 
         # 右側PML
-        # for i in range(ix - pl, ix - 1 + 1):
-        #     vx[i, 1 : jx + 1] = pmla[ix - i] * vx[i, 1 : jx + 1] - pmlb[ix - i] * (
-        #         p[i + 1, 1 : jx + 1] - p[i, 1 : jx + 1]
-        #     )
         vx[ix - pl : ix, jj] = self.pml.a[pl:0:-1, jj] * vx[
             ix - pl : ix, jj
         ] - self.pml.b[pl:0:-1, jj] * (
             p[ix - pl + 1 : ix + 1, jj] - p[ix - pl : ix, jj]
         )
-        callback[1][3] += time.time() - t0
 
         # vy
-        # for j in range(1, pl + 1):
-        #     vy[1 : ix + 1, j] = pmla[j] * vy[1 : ix + 1, j] - pmlb[j] * (
-        #         p[1 : ix + 1, j + 1] - p[1 : ix + 1, j]
-        #     )
         vy[ii, 1 : pl + 1] = self.pml.at[ii, 1 : pl + 1] * vy[
             ii, 1 : pl + 1
         ] - self.pml.bt[ii, 1 : pl + 1] * (p[ii, 2 : pl + 1 + 1] - p[ii, 1 : pl + 1])
-        callback[1][4] += time.time() - t0
 
-        # for j in range(pl + 1, jx - pl - 1 + 1):
-        #     vy[: ix + 1, j] = vy[: ix + 1, j] - vc * (
-        #         p[: ix + 1, j + 1] - p[: ix + 1, j]
-        #     )
         vy[:, pl + 1 : jx - pl] = vy[:, pl + 1 : jx - pl] - vc * (
             p[:, pl + 1 + 1 : jx - pl + 1] - p[:, pl + 1 : jx - pl]
         )
-        callback[1][5] += time.time() - t0
 
-        # for j in range(jx - pl, jx - 1 + 1):
-        #     vy[1 : ix + 1, j] = pmla[jx - j] * vy[1 : ix + 1, j] - pmlb[jx - j] * (
-        #         p[1 : ix + 1, j + 1] - p[1 : ix + 1, j]
-        #     )
         vy[ii, jx - pl : jx] = self.pml.at[ii, pl:0:-1] * vy[
             ii, jx - pl : jx
         ] - self.pml.bt[ii, pl:0:-1] * (
@@ -399,27 +372,17 @@ class SoundField:
             px[i, 1 : jx + 1] = pmla[i] * px[i, 1 : jx + 1] - pmlc[i] * (
                 vx[i, 1 : jx + 1] - vx[i - 1, 1 : jx + 1]
             )
-        callback[1][8] += time.time() - t0
 
-        # for i in range(pl + 1, ix - pl + 1):
-        #     for j in range(jx + 1):
-        #         px[i, j] = px[i, j] - pc * (vx[i, j] - vx[i - 1, j])
-        # if (i == idr) and (j == jdr) and (t <= tdr):
-        #     px[i, j] = px[i, j] + dt * kp0 * q[t] / 3.0 / (dh * dh * dh)
         px[pl + 1 : ix - pl + 1, :] = px[pl + 1 : ix - pl + 1, :] - pc * (
             vx[pl + 1 : ix - pl + 1, :] - vx[pl + 1 - 1 : ix - pl + 1 - 1, :]
         )
         if t <= tdr:
             px[self.ssi, self.ssj] += K
 
-        callback[1][9] += time.time() - t0
-
         for i in range(ix - pl + 1, ix + 1):
             px[i, 1 : jx + 1] = pmla[ix - i + 1] * px[i, 1 : jx + 1] - pmlc[
                 ix - i + 1
             ] * (vx[i, 1 : jx + 1] - vx[i - 1, 1 : jx + 1])
-
-        callback[1][10] += time.time() - t0
 
         # py
         for j in range(1, pl + 1):
@@ -427,27 +390,16 @@ class SoundField:
                 vy[1 : ix + 1, j] - vy[1 : ix + 1, j - 1]
             )
 
-        callback[1][11] += time.time() - t0
-
-        # for j in range(pl + 1, jx - pl + 1):
-        #     for i in range(ix + 1):
-        #         py[i, j] = py[i, j] - pc * (vy[i, j] - vy[i, j - 1])
-        # if (i == idr) and (j == jdr) and (t <= tdr):
-        #     py[i, j] = py[i, j] + dt * kp0 * q[t] / 3.0 / (dh * dh * dh)
         py[:, pl + 1 : jx - pl + 1] = py[:, pl + 1 : jx - pl + 1] - pc * (
             vy[:, pl + 1 : jx - pl + 1] - vy[:, pl + 1 - 1 : jx - pl + 1 - 1]
         )
         if t <= tdr:
             py[self.ssi, self.ssj] += K
 
-        callback[1][12] += time.time() - t0
-
         for j in range(jx - pl + 1, jx + 1):
             py[1 : ix + 1, j] = pmla[jx - j + 1] * py[1 : ix + 1, j] - pmlc[
                 jx - j + 1
             ] * (vy[1 : ix + 1, j] - vy[1 : ix + 1, j - 1])
-
-        callback[1][13] += time.time() - t0
 
         # 音圧の合成
         p = px + py
